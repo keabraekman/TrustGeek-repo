@@ -4,6 +4,25 @@ import datetime
 import requests
 from urllib.parse import urlparse
 import pandas as pd
+from cryptography import x509
+from OpenSSL import SSL
+import socket
+from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives import hashes
+
+
+def get_certificate_chain(host, port=443):
+    ctx = SSL.Context(SSL.TLS_CLIENT_METHOD)
+    conn = socket.create_connection((host, port))
+    ssl_conn = SSL.Connection(ctx, conn)
+    ssl_conn.set_tlsext_host_name(host.encode())
+    ssl_conn.set_connect_state()
+    ssl_conn.do_handshake()
+    chain = ssl_conn.get_peer_cert_chain()
+    ssl_conn.close()
+    conn.close()
+    return chain
+
 
 def check_ssl_certificate(host, port=443):
     parsed = urlparse(host)
@@ -30,9 +49,29 @@ def check_ssl_certificate(host, port=443):
                 if any(weak in cipher_name.upper() for weak in weak_ciphers):
                     errors.append("Weak cipher suite used (" + cipher_name + ")")
                 # Check for forward secrecy (look for ephemeral key exchange methods)
-                if not any(kw in cipher_name.upper() for kw in ("DHE", "ECDHE")):
+                forward_secrecy_ciphers = ["DHE","ECDHE","TLS_AES_","TLS_CHACHA20_POLY1305_SHA256"]
+                if not any(kw in cipher_name.upper() for kw in forward_secrecy_ciphers):
                     errors.append("Lack of forward secrecy")
                 # Retrieve certificate details
+
+                # Cryptography strength
+                der_cert = ssock.getpeercert(binary_form=True)
+                cert = x509.load_der_x509_certificate(der_cert, default_backend())
+                if isinstance(cert.signature_hash_algorithm, (hashes.MD5, hashes.SHA1)):
+                    errors.append(f"Weak signature algorithm: {cert.signature_hash_algorithm.name}")
+                
+                # Check for certificate chain validation
+                # chain = ssock.getpeercertchain()
+                # if len(chain) < 2:
+                #     errors.append("Incomplete certificate chain (missing intermediates)")
+                try:
+                    chain = get_certificate_chain(host)
+                    if len(chain) < 2:
+                        errors.append("Incomplete certificate chain (missing intermediates)")
+                except Exception as e:
+                    # errors.append("Error retrieving certificate chain: " + str(e))
+                    print('Cannot retrieve certificate chain')
+
                 cert = ssock.getpeercert()
     except ssl.CertificateError as ce:
         errors.append("Hostname mismatch: " + str(ce))
@@ -57,7 +96,8 @@ def check_ssl_certificate(host, port=443):
         if now > not_after:
             errors.append("Expired certificate")
     except Exception as e:
-        errors.append("Validity date parsing error: " + str(e))
+        # errors.append("Validity date parsing error: " + str(e))
+        print('date error, not appending it')
     # Check if certificate is self-signed (subject equals issuer)
     subject = dict(x[0] for x in cert.get("subject", ()))
     issuer = dict(x[0] for x in cert.get("issuer", ()))
@@ -88,8 +128,8 @@ def check_ssl_certificate(host, port=443):
     # - Use of default or poorly managed certificates
     if errors:
         return "Errors detected: " + "; ".join(errors)
-    else:
-        return "No SSL/TLS errors detected."
+    # else:
+    #     return "No SSL/TLS errors detected."
 
 def debug_check_ssl(website, port=443):
     result = check_ssl_certificate(website, port=port)
