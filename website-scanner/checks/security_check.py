@@ -9,6 +9,19 @@ from OpenSSL import SSL
 import socket
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import hashes
+from cryptography.x509.oid import ExtensionOID, AuthorityInformationAccessOID
+from cryptography.x509.ocsp import OCSPRequestBuilder
+from cryptography.hazmat.primitives import serialization
+
+from cryptography.x509.oid import ExtensionOID, AuthorityInformationAccessOID
+from cryptography.hazmat.backends import default_backend
+from cryptography.x509.ocsp import (
+    OCSPRequestBuilder,
+    load_der_ocsp_response,
+    OCSPResponseStatus,
+    OCSPCertStatus
+)
+from cryptography.hazmat.primitives import serialization
 
 
 def create_secure_connection(host, port=443, timeout=5):
@@ -138,63 +151,72 @@ def check_security_headers(host):
     return errors
 
 
-# def check_certificate_revocation(host, port=443, timeout=5):
-#     """
-#     Check the certificate revocation status using OCSP.
-#     Only adds an error if the certificate is explicitly revoked.
-#     If the revocation status cannot be determined (e.g. OCSP URL is missing or request fails),
-#     no error is returned.
-#     """
-#     print('cert revocation check')
-#     errors = []
-#     try:
-#         # Establish a secure connection to obtain the leaf certificate
-#         ssock = create_secure_connection(host, port, timeout)
-#         leaf_der = ssock.getpeercert(binary_form=True)
-#         leaf_cert = x509.load_der_x509_certificate(leaf_der, default_backend())
-#         # Retrieve the certificate chain to extract the issuer certificate
-#         chain = get_certificate_chain(host, port)
-#         # If we cannot determine the issuer, skip the revocation check.
-#         if len(chain) < 2:
-#             print(1)
-#             return []
-#         issuer_cert = chain[1].to_cryptography()
-#         # Try to extract OCSP URL from the Authority Information Access (AIA) extension.
-#         try:
-#             aia = leaf_cert.extensions.get_extension_for_oid(ExtensionOID.AUTHORITY_INFORMATION_ACCESS).value
-#             ocsp_urls = [desc.access_location.value for desc in aia if desc.access_method == AuthorityInformationAccessOID.OCSP]
-#             if not ocsp_urls:
-#                 print(2)
-#                 return []
-#             ocsp_url = ocsp_urls[0]
-#         except Exception:
-#             print(3)
-#             return []
-#         # Build the OCSP request for the leaf certificate
-#         builder = OCSPRequestBuilder()
-#         builder = builder.add_certificate(leaf_cert, issuer_cert, leaf_cert.signature_hash_algorithm)
-#         ocsp_request = builder.build()
-#         req_data = ocsp_request.public_bytes(encoding=serialization.Encoding.DER)
-        
-#         # Send the OCSP request via HTTP POST
-#         headers = {'Content-Type': 'application/ocsp-request'}
-#         ocsp_response = requests.post(ocsp_url, data=req_data, headers=headers, timeout=timeout)
-#         if ocsp_response.status_code != 200:
-#             print(4)
-#             return []
-        
-#         # Parse the OCSP response
-#         ocsp_resp = load_der_ocsp_response(ocsp_response.content)
-#         if ocsp_resp.response_status == OCSPResponseStatus.SUCCESSFUL:
-#             if ocsp_resp.cert_status == OCSPCertStatus.REVOKED:
-#                 errors.append("Certificate has been revoked")
-#     except Exception:
-#         # If any error occurs during the OCSP process, we consider the revocation status as unknown
-#         # and do not add an error (since failure to check is not a direct vulnerability).
-#         print(5)
-#         return []
-#     print(6)
-#     return errors
+def check_certificate_revocation(host, port=443, timeout=5):
+    """
+    Check the certificate revocation status using OCSP.
+    Only adds an error if the certificate is explicitly revoked.
+    If the revocation status cannot be determined (e.g. OCSP URL is missing or request fails),
+    no error is returned.
+    """
+    print("Starting certificate revocation check...")
+    errors = []
+    try:
+        # Establish a secure connection to obtain the leaf certificate.
+        ssock = create_secure_connection(host, port, timeout)
+        leaf_der = ssock.getpeercert(binary_form=True)
+        leaf_cert = x509.load_der_x509_certificate(leaf_der, default_backend())
+
+        # Retrieve the certificate chain to extract the issuer certificate.
+        chain = get_certificate_chain(host, port)
+        if len(chain) < 2:
+            print("Incomplete certificate chain; skipping OCSP check.")
+            return []
+        issuer_cert = chain[1].to_cryptography()
+
+        # Try to extract the OCSP URL from the Authority Information Access (AIA) extension.
+        try:
+            aia_ext = leaf_cert.extensions.get_extension_for_oid(ExtensionOID.AUTHORITY_INFORMATION_ACCESS)
+        except x509.ExtensionNotFound:
+            print("AIA extension not found; skipping OCSP check.")
+            return []
+
+        aia = aia_ext.value
+        # Safely extract OCSP URLs from the AIA extension.
+        ocsp_urls = [
+            desc.access_location.value if hasattr(desc.access_location, "value") else str(desc.access_location)
+            for desc in aia
+            if desc.access_method == AuthorityInformationAccessOID.OCSP
+        ]
+        if not ocsp_urls:
+            print("No OCSP URL found in AIA extension; skipping OCSP check.")
+            return []
+        ocsp_url = ocsp_urls[0]
+
+        # Build the OCSP request for the leaf certificate.
+        builder = OCSPRequestBuilder()
+        builder = builder.add_certificate(leaf_cert, issuer_cert, leaf_cert.signature_hash_algorithm)
+        ocsp_request = builder.build()
+        req_data = ocsp_request.public_bytes(encoding=serialization.Encoding.DER)
+
+        # Send the OCSP request via HTTP POST.
+        headers = {'Content-Type': 'application/ocsp-request'}
+        ocsp_response = requests.post(ocsp_url, data=req_data, headers=headers, timeout=timeout)
+        if ocsp_response.status_code != 200:
+            print(f"OCSP responder returned status {ocsp_response.status_code}; skipping revocation check.")
+            return []
+
+        # Parse the OCSP response.
+        ocsp_resp = load_der_ocsp_response(ocsp_response.content)
+        if ocsp_resp.response_status == OCSPResponseStatus.SUCCESSFUL:
+            if ocsp_resp.certificate_status == OCSPCertStatus.REVOKED:
+                errors.append("Certificate has been revoked")
+    except Exception as e:
+        # If any error occurs during the OCSP process, we consider the revocation status as unknown.
+        print("Exception during OCSP check:", e)
+        return []
+    
+    print("OCSP check completed.")
+    return errors
 
 def security_errors(host, port=443):
     """
@@ -237,7 +259,8 @@ def website_vulnerabilities_output(df):
 if __name__ == "__main__":
     # For testing: prompt the user for a website and print the diagnostics.
     website = 'www.plexicus.com'
-    errs = security_errors(website)
+    # errs = security_errors(website)
+    errs = check_certificate_revocation(website)
     if errs:
         print("Errors detected:", "; ".join(errs))
     else:
