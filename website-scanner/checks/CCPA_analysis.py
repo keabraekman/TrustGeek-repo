@@ -259,7 +259,7 @@ def ccpa_analysis_output(df):
         if driver is not None:
             driver.quit()
 
-    df['CCPA analysis'] = results
+    df['CCPA_analysis'] = results
     return df
 
 
