@@ -237,7 +237,7 @@ def security_errors(host, port=443):
         return None
     print('cert revocation done')
     return errors
- 
+
 
 def website_vulnerabilities_output(df):
     """
