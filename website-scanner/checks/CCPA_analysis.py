@@ -106,8 +106,6 @@ openai.api_key = os.getenv("OPENAI_API_KEY")
 
 
 def ccpa_analysis(privacy_policy):
-    print('ccpa_analysis!!!!!')
-    print('analyzing : ', privacy_policy[:50])
     """
     Analyzes the provided privacy_policy text for CCPA compliance.
     
@@ -125,21 +123,21 @@ def ccpa_analysis(privacy_policy):
     # Prepare the prompt for ChatGPT.
     prompt = (
         "Analyze the following privacy policy text and determine if it is CCPA compliant. "
-        "If it is compliant, simply return 'CCPA COMPLIANT'. Otherwise, in 20 words or less, "
+        "If it is compliant, return ONLY 'CCPA COMPLIANT'. Otherwise, in 20 words or less, "
         "provide a very basic summary explaining why it is not compliant.\n\n"
         f"Privacy Policy:\n{privacy_policy}"
     )
     try:
         # Call the OpenAI ChatCompletion API using the new interface.
-        response = openai.chat.completions.create(
-        # response = client.chat.completions.create(
-            model="gpt-4o-mini",  # Use the appropriate model name, e.g., "gpt-4" or "gpt-3.5-turbo"
-            # model = "deepseek-chat",
+        # response = openai.chat.completions.create(
+        response = client.chat.completions.create(
+            # model="gpt-4o-mini",  # Use the appropriate model name, e.g., "gpt-4" or "gpt-3.5-turbo"
+            model = "deepseek-chat",
             messages=[
                 {"role": "system", "content": "You are a privacy policy compliance analyzer."},
                 {"role": "user", "content": prompt}
             ],
-            # stream=False,
+            stream=False,
             temperature=0,
             max_tokens=150  # Adjust token limit as needed.
         )

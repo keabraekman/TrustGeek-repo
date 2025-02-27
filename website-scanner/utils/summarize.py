@@ -178,10 +178,11 @@ def summarize_and_consequences(df):
             f"- IF the website IS CCPA compliant, DO NOT MENTION ANYTHING ABOUT CCPA Compliance"
         )
         try:
-            response = openai.chat.completions.create(
-            # response = client.chat.completions.create(
-                model="gpt-4o-mini",  # Adjust the model as necessary
-                # model = "deepseek-chat",
+            # response = openai.chat.completions.create(
+            response = client.chat.completions.create(
+                # model="gpt-4o-mini",  # Adjust the model as necessary
+                # model="gpt-o3-mini",
+                model = "deepseek-chat",
                 messages=[
                     {"role": "system", "content": """You are a helpful assistant. Always respond in exactly one sentence, keep it LIGHT and POLITE. Follow this structure:
                      You are not allowed to use any of the following words : {spam_words}
@@ -191,7 +192,7 @@ def summarize_and_consequences(df):
 4) If noncompliant, mention that risk."""},
                     {"role": "user", "content": prompt}
                 ],
-                # stream=False,
+                stream=False,
                 temperature=0.3,
                 max_tokens=100  # This ensures a short response
             )
@@ -204,12 +205,46 @@ def summarize_and_consequences(df):
 
 
 
-def summarize_and_consequences_test():
-    return None
+def summarize_and_consequences_test(vulnerabilities, CCPA_analysis):
+    prompt = (
+        f"I need you to write a personalized sentence to the owner of a website."
+        f"I will give you a list of that website's vulnerabilities (could be None)"
+        f"I will give you that website's CCPA compliance status. Three posibilities : (1. CCPA compliant, 2. CCPA noncompliant, or 3. website doesn't have a privacy policy)"
+        f"Website Vulnerabilities: {vulnerabilities}\n"
+        f"CCPA Status: {CCPA_analysis}"
+        f"Using this information, write a short sentence explaining in simple terms :"
+        f"- the website's vulnerabilities and the consequences of not addressing these vulnerabilities."
+        f"- IF the website lacks a privacy policy, the risks of not having a privacy policy."
+        f"- IF the website HAS a noncompliant privacy policy, the risk of not being California Consumer Protections Act Compliant, provide a very short explanation of what CCPA is."
+        f"- IF the website IS CCPA compliant, DO NOT MENTION ANYTHING ABOUT CCPA Compliance"
+    )
+    try:
+        # response = openai.chat.completions.create(
+        response = client.chat.completions.create(
+            # model="gpt-4o-mini",  # Adjust the model as necessary
+            # model="gpt-o3-mini",
+            model = "deepseek-chat",
+            messages=[
+                {"role": "system", "content": """You are a helpful assistant. Always respond in exactly one sentence, keep it LIGHT and POLITE. Follow this structure:
+                    You are not allowed to use any of the following words : {spam_words}
+1) Mention vulnerabilities.
+2) Mention consequences.
+3) If no privacy policy, mention that risk.
+4) If noncompliant, mention that risk."""},
+                {"role": "user", "content": prompt}
+            ],
+            # stream=False,
+            temperature=0.3,
+            max_tokens=200  # This ensures a short response
+        )
+        summary_text = response.choices[0].message.content.strip()
+    except Exception as e:
+        summary_text = f"Error: {e}"
+    return summary_text
 
 
 
 if __name__ == "__main__":
-    vulnerabilities = """Your website has several vulnerabilities, including missing security headers and a cookie without the 'HttpOnly' flag, which could expose it to attacks, and since it lacks a privacy policy, this raises significant risks regarding consumer rights and transparency under the California Consumer Privacy Act."""
-    CCPA_analysis = 'Not compliant; lacks a privacy policy, which is essential for CCPA transparency and consumer rights.'
-    print(summarize_and_consequences(vulnerabilities, CCPA_analysis))
+    vulnerabilities = """{'header_errors': ['Content-Security-Policy header missing', 'X-Frame-Options header missing', 'Referrer-Policy header missing', 'X-XSS-Protection header missing'], 'cookie_errors': ["Cookie missing 'Secure' flag", "Cookie missing 'HttpOnly' flag"]}"""
+    CCPA_analysis = 'Not compliant; it lacks clear information on consumer rights under CCPA, such as the right to opt-out of data selling.'
+    print(summarize_and_consequences_test(vulnerabilities, CCPA_analysis))
