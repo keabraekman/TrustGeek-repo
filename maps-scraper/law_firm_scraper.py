@@ -1,100 +1,103 @@
 import os
-from dotenv import load_dotenv
-import googlemaps
 import time
 import csv
+from dotenv import load_dotenv
+import googlemaps
+
+# ── CONFIGURE THESE ────────────────────────────────────────────────
+DESIRED_LEADS = 100   # stop once we have this many no-website firms
+SURVEY_MILES  = 10     # how far (in miles) from the center to sweep
+STEP_MILES    = 0.5     # grid spacing (miles)
+POINT_RADIUS  = 1200  # search radius per point (meters)
+# ───────────────────────────────────────────────────────────────────
 
 load_dotenv()
-API_KEY = os.getenv("GOOGLE_MAPS_API_KEY")
-gmaps = googlemaps.Client(key=API_KEY)
-# example.env
+gmaps = googlemaps.Client(key=os.getenv("GOOGLE_MAPS_API_KEY"))
 
-# Convert address to lat/lng
-def geocode_address(address):
-    geo = gmaps.geocode(address)
-    return geo[0]['geometry']['location']['lat'], geo[0]['geometry']['location']['lng']
+def geocode(addr):
+    loc = gmaps.geocode(addr)[0]['geometry']['location']
+    return loc['lat'], loc['lng']
 
-# Generate grid points around the center
-def generate_grid(center_lat, center_lng, miles=3, step_miles=1):
-    step_deg = 0.015 * step_miles
-    range_n = int(miles / step_miles)
-    return [(center_lat + dy * step_deg, center_lng + dx * step_deg)
-            for dx in range(-range_n, range_n + 1)
-            for dy in range(-range_n, range_n + 1)]
+def generate_grid(lat0, lng0, survey_miles, step_miles):
+    deg_per_mile = 0.0145
+    step_deg     = deg_per_mile * step_miles
+    n            = int(survey_miles / step_miles)
+    for ix in range(-n, n+1):
+        for iy in range(-n, n+1):
+            # hex‐offset every other row
+            lon = lng0 + ix*step_deg + (iy % 2)*step_deg/2
+            lat = lat0 + iy*step_deg
+            yield lat, lon
 
-# Search law firms near a coordinate
-def search_law_firms_near(lat, lng):
-    results = []
-    next_page_token = None
+def places_text_search(lat, lng, radius_m):
+    """Yields each place result from all pages."""
+    next_tok = None
     while True:
-        response = gmaps.places(
+        resp = gmaps.places(
             query="law firm",
             location=(lat, lng),
-            radius=1600,
-            type='lawyer',
-            page_token=next_page_token
+            radius=radius_m,
+            page_token=next_tok
         )
-        results.extend(response.get('results', []))
-        next_page_token = response.get('next_page_token')
-        if not next_page_token:
+        hits = resp.get("results", [])
+        print(f"    → page returned {len(hits)} hits")
+        for h in hits:
+            yield h
+        next_tok = resp.get("next_page_token")
+        if not next_tok:
             break
         time.sleep(2)
-    return results
 
-# Filter out law firms that have a website and collect phone numbers
-def filter_firms_without_website(places):
-    firms = []
-    for place in places:
-        place_id = place['place_id']
-        try:
-            details = gmaps.place(place_id=place_id, fields=["name", "formatted_address", "website", "formatted_phone_number"])
-            result = details.get("result", {})
-            if not result.get("website"):
-                firms.append({
-                    "name": result.get("name"),
-                    "address": result.get("formatted_address"),
-                    "phone": result.get("formatted_phone_number", "N/A")
-                })
-        except Exception as e:
-            print(f"Error with place_id {place_id}: {e}")
-        time.sleep(0.1)
-    return firms
+def check_and_collect(pid, seen, output):
+    """Check detail for one place_id, add to output if no website."""
+    if pid in seen:
+        return False
+    seen.add(pid)
+    det = gmaps.place(
+        place_id=pid,
+        fields=["name","formatted_address","website","formatted_phone_number"]
+    )["result"]
+    if not det.get("website"):
+        output.append({
+            "name":    det.get("name"),
+            "address": det.get("formatted_address"),
+            "phone":   det.get("formatted_phone_number", "N/A")
+        })
+        return True
+    return False
 
-# Save results to CSV
-def export_to_csv(firms, filename="law_firms_no_website.csv"):
-    with open(filename, mode='w', newline='') as file:
-        writer = csv.DictWriter(file, fieldnames=["name", "address", "phone"])
-        writer.writeheader()
-        for firm in firms:
-            writer.writerow(firm)
-    print(f"\n📁 Exported {len(firms)} firms to: {filename}")
+def export_csv(data, fname="law_firms_no_website.csv"):
+    with open(fname, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=["name","address","phone"])
+        w.writeheader()
+        w.writerows(data)
+    print(f"\n📁 Exported {len(data)} leads → {fname}")
 
-# Main execution
-if __name__ == "__main__":
-    center_address = "2476 Glencoe Ave, Los Angeles, CA"
-    center_lat, center_lng = geocode_address(center_address)
+if __name__=="__main__":
+    center_addr = "2476 Glencoe Ave, Los Angeles, CA"
+    lat0, lng0 = geocode(center_addr)
+    print(f"Center at {lat0:.6f}, {lng0:.6f}")
+    print(f"Target: {DESIRED_LEADS} no-website firms.\n")
 
-    print(f"Center coordinates: {center_lat}, {center_lng}")
-    grid_points = generate_grid(center_lat, center_lng, miles=3, step_miles=1)
+    seen_ids = set()
+    no_site  = []
+    grid_pts = list(generate_grid(lat0, lng0, SURVEY_MILES, STEP_MILES))
 
-    print("Collecting law firms...")
-    all_places = {}
-    for lat, lng in grid_points:
-        print(f"Searching around {lat:.4f}, {lng:.4f}")
-        try:
-            firms = search_law_firms_near(lat, lng)
-            for firm in firms:
-                all_places[firm['place_id']] = firm
-        except Exception as e:
-            print(f"Error during search: {e}")
+    for i, (lat, lon) in enumerate(grid_pts, 1):
+        print(f"[{i}/{len(grid_pts)}] Searching around {lat:.4f}, {lon:.4f}")
+        for place in places_text_search(lat, lon, POINT_RADIUS):
+            pid = place["place_id"]
+            # optional: print small progress
+            if len(no_site) % 10 == 0 and pid not in seen_ids:
+                print(f"      • found {len(no_site)} so far…")
+            added = check_and_collect(pid, seen_ids, no_site)
+            if added:
+                print(f"      ✅ #{len(no_site)}: {place['name']}")
+                if len(no_site) >= DESIRED_LEADS:
+                    break
+        if len(no_site) >= DESIRED_LEADS:
+            print("\n🎯 Reached target, stopping early!")
+            break
 
-    print(f"Found {len(all_places)} unique law firms.")
-    print("Filtering firms without websites...")
-
-    firms_no_website = filter_firms_without_website(list(all_places.values()))
-
-    print(f"\n✅ Law firms near {center_address} without a website:\n")
-    for firm in firms_no_website:
-        print(f"- {firm['name']} — {firm['address']} — 📞 {firm['phone']}")
-
-    export_to_csv(firms_no_website)
+    print(f"\n✅ Collected {len(no_site)} law firms without websites.")
+    export_csv(no_site)
